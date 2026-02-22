@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![version](https://img.shields.io/badge/版本-2.0.0-blue)
+![version](https://img.shields.io/badge/版本-1.0.0-blue)
 ![php](https://img.shields.io/badge/PHP-7.4+-green)
 ![MIT](https://img.shields.io/badge/许可证-MIT-orange)
 
