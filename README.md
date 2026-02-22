@@ -164,18 +164,15 @@ http://你的域名/status
 ### 📸 界面预览
 
 #### 登录页面
-[<img src="https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234200.png" width="300" alt="缩略图">](https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234200.png)
-![photo](https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_235549.png)
+<img src="https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_235549.png" width="700" alt="缩略图">
 输入管理员账号密码进入监控面板
 
 #### 监控主面板
-
-![photo](https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234441.png)
+<img src="https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234441.png" width="700" alt="缩略图">
 整体概览：健康状态、失败计数、实时日志
 
 #### 实时日志与错误监控
-
-![photo](https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234200.png)
+<img src="https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234200.png" width="700" alt="缩略图">
 左侧实时日志，右侧错误记录，方便快速定位问题
 
 
