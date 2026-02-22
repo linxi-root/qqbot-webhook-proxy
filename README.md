@@ -2,9 +2,9 @@ QQ官方机器人 Webhook 反向代理分发系统
 
 <div align="center">
 
-https://img.shields.io/badge/版本-2.0.0-blue 
-https://img.shields.io/badge/PHP-7.4+-green 
-https://img.shields.io/badge/许可证-MIT-orange 
+[![version](https://img.shields.io/badge/版本-2.0.0-blue)]
+[![php](https://img.shields.io/badge/PHP-7.4+-green)]
+[![MIT](https://img.shields.io/badge/许可证-MIT-orange)]
 
 让多个QQ机器人共用一个服务器端口的神奇工具！
 
