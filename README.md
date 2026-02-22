@@ -2,9 +2,9 @@ QQ官方机器人 Webhook 反向代理分发系统
 
 <div align="center">
 
-[![version](https://img.shields.io/badge/版本-2.0.0-blue)]
-[![php](https://img.shields.io/badge/PHP-7.4+-green)]
-[![MIT](https://img.shields.io/badge/许可证-MIT-orange)]
+![version](https://img.shields.io/badge/版本-2.0.0-blue)
+![php](https://img.shields.io/badge/PHP-7.4+-green)
+![MIT](https://img.shields.io/badge/许可证-MIT-orange)
 
 让多个QQ机器人共用一个服务器端口的神奇工具！
 
@@ -53,14 +53,18 @@ QQ官方机器人 Webhook 反向代理分发系统
 第二步：下载安装
 
 ```bash
+git clone https://github.com/linxi-root/qqbot-webhook-proxy.git
 # 下载代码到你的服务器
-git clone https://github.com/你的用户名/qq-bot-webhook-proxy.git
+```
 
+```bash
+cd qqbot-webhook-proxy
 # 进入目录
-cd qq-bot-webhook-proxy
+```
 
-# 安装依赖（需要Composer）
+```bash
 composer require phpmailer/phpmailer
+# 安装依赖（需要Composer）
 ```
 
 第三步：配置机器人
@@ -70,15 +74,15 @@ composer require phpmailer/phpmailer
 ```php
 'targets' => [
     // 在这里添加你的QQ机器人
-    '102064348' => [  // ← 你的机器人AppID
-        'name' => '落日与尘埃',  // 机器人名字（随便写）
+    '123456789' => [  // ← 你的机器人AppID
+        'name' => 'bot',  // 机器人名字（随便写）
         'url' => 'http://127.0.0.1:8081',  // 机器人实际运行的地址
         'timeout' => 30,  // 超时时间
-        'health_check' => '/',  // 健康检查路径
+        'health_check' => '/',  // 健康检查路径(默认)
         'description' => '机器人webhook分发服务'  // 描述
     ],
-    '102041881' => [
-        'name' => '安若孤影',
+    '987654321' => [
+        'name' => 'bot2',
         'url' => 'http://127.0.0.1:8082',  // 第二个机器人运行在8082端口
         'timeout' => 30,
         'health_check' => '/',
@@ -103,6 +107,7 @@ composer require phpmailer/phpmailer
     'to' => '你的接收邮箱@126.com',  // 接收告警的邮箱
 ],
 ```
+> from与username的值一样
 
 第五步：设置登录密码
 
@@ -110,17 +115,20 @@ composer require phpmailer/phpmailer
 
 ```php
 'admin' => [
-    'username' => 'admin',  // 登录用户名
-    'password' => '你的密码',  // ← 改成你自己的密码！
-],
+    'username' => 'admin',
+    'password' => 'admin123', // 明文密码（生产环境建议使用更复杂的密码）
+    'session_lifetime' => 3600, // 会话生命周期（秒）
+    'enable_password_change' => true // 是否允许在界面修改密码
+]
 ```
 
-第六步：启动服务
+第六步：配置伪静态
 
-```bash
-# 如果你用Apache/Nginx，配置好域名指向这个目录就行
-# 如果你用PHP内置服务器（仅测试用）
-php -S 0.0.0.0:8080
+```php
+# 简单的规则，将所有请求指向 index.php
+location / {
+    try_files $uri $uri/ /index.php?$args;
+}
 ```
 
 📝 如何在QQ机器人后台配置？
@@ -131,7 +139,7 @@ php -S 0.0.0.0:8080
 2. 进入"开发设置"
 3. 在"事件回调配置"中填写：
    ```
-   http://你的域名/index.php
+   https://你的域名
    ```
 4. 保存即可！
 
@@ -139,10 +147,10 @@ php -S 0.0.0.0:8080
 
 📊 如何查看状态？
 
-访问你的域名后加 /status.php：
+访问你的域名后加 /status.php(也可以不加.php)：
 
 ```
-http://你的域名/status.php
+http://你的域名/status
 ```
 
 输入你在 config.php 中设置的用户名密码，就能看到：
@@ -153,7 +161,7 @@ http://你的域名/status.php
 · ⚠️ 最近错误日志
 · 📝 实时运行日志
 
-https://via.placeholder.com/800x400?text=状态面板预览
+![photo](https://via.placeholder.com/800x400?text=状态面板预览)
 
 🔧 常见问题
 
@@ -198,7 +206,7 @@ Q：如何修改登录密码？
 
 🔒 安全建议
 
-1. 修改默认密码（admin/Tt106911）
+1. 修改默认密码（admin/admin123）
 2. 建议用HTTPS协议
 3. 定期查看错误日志
 4. 配置文件中的密码不要太简单
@@ -214,7 +222,7 @@ Q：如何修改登录密码？
 
 📜 更新日志
 
-v2.0.0
+v1.0.0
 
 · ✨ 首次发布
 · 🚀 支持多机器人分发
