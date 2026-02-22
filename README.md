@@ -164,7 +164,7 @@ http://你的域名/status
 ### 📸 界面预览
 
 #### 登录页面
-
+[<img src="https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234200.png" width="300" alt="缩略图">](https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_234200.png)
 ![photo](https://github.com/linxi-root/photo/blob/main/Screenshot_2026_0222_235549.png)
 输入管理员账号密码进入监控面板
 
