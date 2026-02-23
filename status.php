@@ -1311,7 +1311,7 @@ $initialLogs = getLogContent($logFile, 200);
                 <a href="#" onclick="showPasswordModal(); return false;" class="btn btn-primary">🔑 修改密码</a>
                 <?php endif; ?>
                 
-                <a href="apidocs.php" target="_blank" class="btn btn-primary">📚 API文档</a>
+                <a href="apidocs.php" class="btn btn-primary">📚 API文档</a>
                 <a href="?action=send_report" class="btn btn-primary" onclick="return confirm('确定发送状态报告邮件吗？')">📧 发送报告</a>
                 <a href="?action=download_logs&date=<?php echo date('Y-m-d'); ?>&lines=200" class="btn btn-primary">📥 下载日志</a>
                 <button class="btn btn-primary" onclick="refreshData()" id="refreshBtn">🔄 手动刷新</button>
