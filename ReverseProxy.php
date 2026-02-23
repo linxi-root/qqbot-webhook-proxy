@@ -56,6 +56,11 @@ class ReverseProxy
     private $startTime;
     
     /**
+     * 无效ID记录缓存文件路径
+     */
+    private $invalidIdCacheFile;
+    
+    /**
      * 构造函数
      */
     public function __construct()
@@ -77,6 +82,88 @@ class ReverseProxy
         
         // 初始化邮件发送器
         $this->mailer = new Mailer($this->config['email'], $this->config['log_file']);
+        
+        // 设置无效ID缓存文件路径
+        $this->invalidIdCacheFile = __DIR__ . '/data/invalid_id_cache.json';
+    }
+    
+    /**
+     * 加载无效ID缓存
+     */
+    private function loadInvalidIdCache()
+    {
+        if (file_exists($this->invalidIdCacheFile)) {
+            $content = file_get_contents($this->invalidIdCacheFile);
+            $data = json_decode($content, true);
+            if (is_array($data)) {
+                return $data;
+            }
+        }
+        return [];
+    }
+    
+    /**
+     * 保存无效ID缓存
+     */
+    private function saveInvalidIdCache($cache)
+    {
+        $dir = dirname($this->invalidIdCacheFile);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        file_put_contents($this->invalidIdCacheFile, json_encode($cache, JSON_PRETTY_PRINT));
+    }
+    
+    /**
+     * 记录无效ID错误（每个ID最多记录2次）
+     * @param string $id
+     */
+    private function logInvalidId($id)
+    {
+        $cacheKey = $id ?: 'missing';
+        $now = time();
+        
+        // 加载缓存
+        $invalidIdCache = $this->loadInvalidIdCache();
+        
+        // 清理过期缓存（超过24小时）
+        foreach ($invalidIdCache as $key => $data) {
+            if ($now - $data['last_time'] > 86400) { // 24小时
+                unset($invalidIdCache[$key]);
+            }
+        }
+        
+        // 初始化或获取当前记录
+        if (!isset($invalidIdCache[$cacheKey])) {
+            $invalidIdCache[$cacheKey] = [
+                'count' => 0,
+                'last_time' => $now
+            ];
+        }
+        
+        $record = &$invalidIdCache[$cacheKey];
+        
+        // 检查是否已经记录过2次
+        if ($record['count'] >= 2) {
+            return; // 已达到最大记录次数，不再记录
+        }
+        
+        // 增加记录次数
+        $record['count']++;
+        $record['last_time'] = $now;
+        
+        // 保存缓存
+        $this->saveInvalidIdCache($invalidIdCache);
+        
+        // 记录日志
+        $message = $id ? "无效的ID请求: {$id}" : "无效的ID请求: ID为空";
+        if ($record['count'] == 1) {
+            $message .= " (首次记录)";
+        } else {
+            $message .= " (第二次记录，后续24小时内将不再记录)";
+        }
+        
+        $this->log($message, 'WARN');
     }
     
     /**
@@ -114,18 +201,25 @@ class ReverseProxy
     }
     
     /**
-     * 获取ID从请求头
+     * 从多个可能的请求头中获取ID
      * @return string|null
      */
     private function getIdFromHeader()
     {
-        foreach ($this->headers as $key => $value) {
-            if (strtolower($key) === 'x-bot-appid') {
-               return $value;
+        $idHeaders = $this->config['id_headers'] ?? ['x-bot-appid'];
+        
+        foreach ($idHeaders as $headerName) {
+            $headerNameLower = strtolower($headerName);
+            foreach ($this->headers as $key => $value) {
+                if (strtolower($key) === $headerNameLower) {
+                    return $value;
+                }
             }
         }
         return null;
     }
+    
+    
     
     /**
      * 记录日志
@@ -204,6 +298,7 @@ class ReverseProxy
         
         file_put_contents($metricsFile, json_encode($metrics, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
+    
     
     /**
      * 更新健康检查状态
@@ -689,7 +784,8 @@ class ReverseProxy
             $id = $this->getIdFromHeader();
             
             if (!$id) {
-                $this->handleError('无法从请求头中获取ID，请设置X-Bot-Appid头', 400);
+                $this->logInvalidId(null);
+                $this->handleError('无法从请求头中获取ID，请设置以下任一请求头：' . implode(', ', $this->config['id_headers'] ?? ['x-bot-appid']), 400);
                 return;
             }
             
@@ -697,6 +793,7 @@ class ReverseProxy
             
             // 检查ID是否存在
             if (!isset($this->config['targets'][$id])) {
+                $this->logInvalidId($id);
                 $this->handleError("无效的ID: {$id}", 404);
                 return;
             }
@@ -720,6 +817,7 @@ class ReverseProxy
             $this->handleError("系统错误: " . $e->getMessage(), 500);
         }
     }
+    
     
     /**
      * 异步健康检查（不影响当前请求）

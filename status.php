@@ -13,8 +13,9 @@ date_default_timezone_set($config['system']['timezone'] ?? 'Asia/Shanghai');
 $healthFile = $config['health_check_file'] ?? __DIR__ . '/data/health_check.json';
 $metricsFile = $config['monitoring']['metrics_file'] ?? __DIR__ . '/data/metrics.json';
 $logFile = $config['log_file'] ?? __DIR__ . '/logs/proxy.log';
+$logDir = dirname($logFile);
 
-// ==================== 登录校验（从配置文件读取） ====================
+// ==================== 登录校验 ====================
 session_start();
 
 // 从配置文件获取管理员信息
@@ -43,15 +44,12 @@ if ($password_change_enabled && isset($_SESSION['logged_in']) && $_SESSION['logg
             // 更新配置文件中的密码
             $config_content = file_get_contents(__DIR__ . '/config.php');
             
-            // ===== 修改这里：只修改 admin 配置中的密码 =====
-            // 只匹配 admin 配置节中的 password
             $admin_pattern = "/(['\"])admin(['\"])\s*=>\s*\[\s*['\"]username['\"]\s*=>\s*['\"][^'\"]*['\"]\s*,\s*['\"]password['\"]\s*=>\s*)(['\"])([^'\"]*)(['\"])/";
             $admin_replacement = "$1$2$3$4" . $new_password . "$5";
             $new_config_content = preg_replace($admin_pattern, $admin_replacement, $config_content, 1);
             
             if ($new_config_content && file_put_contents(__DIR__ . '/config.php', $new_config_content)) {
                 $password_message = '密码修改成功，请重新登录';
-                // 强制重新登录
                 $_SESSION = array();
                 session_destroy();
                 header('Location: status.php');
@@ -99,16 +97,15 @@ if (isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true) {
     }
 }
 
-// 检查是否已登录（排除AJAX请求）
+// 检查是否已登录
 if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
-    // 如果是AJAX请求，返回未授权
     if (isset($_GET['ajax']) && $_GET['ajax'] === 'get_data') {
         header('HTTP/1.1 401 Unauthorized');
         echo json_encode(['error' => '未登录', 'login_required' => true]);
         exit;
     }
     
-    // 显示登录页面（代码保持不变，但去掉底部的默认密码提示）
+    // 显示登录页面（代码保持不变）
     ?>
     <!DOCTYPE html>
     <html lang="zh-CN">
@@ -117,7 +114,6 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>登录 - 反向代理监控系统</title>
         <style>
-            /* 登录页面的样式保持不变 */
             * {
                 margin: 0;
                 padding: 0;
@@ -267,11 +263,50 @@ if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
     exit;
 }
 
+// 处理维护模式切换
+if (isset($_GET['action']) && $_GET['action'] === 'toggle_maintenance') {
+    // 检查文件是否可写
+    $configFile = __DIR__ . '/config.php';
+    
+    if (!is_writable($configFile)) {
+        $message = '维护模式切换失败：配置文件不可写，请检查文件权限';
+        header('Location: status.php?message=' . urlencode($message));
+        exit;
+    }
+    
+    $config_content = file_get_contents($configFile);
+    
+    // 查找并替换 maintenance_mode 的值
+    $new_value = $config['system']['maintenance_mode'] ? 'false' : 'true';
+    
+    // 使用更精确的正则表达式
+    $pattern = "/(['\"]system['\"]\s*=>\s*\[\s*.*?['\"]maintenance_mode['\"]\s*=>\s*)(true|false)/s";
+    $replacement = "$1" . $new_value;
+    
+    $new_config_content = preg_replace($pattern, $replacement, $config_content, 1);
+    
+    if ($new_config_content && $new_config_content !== $config_content) {
+        if (file_put_contents($configFile, $new_config_content)) {
+            $message = '维护模式已' . ($new_value === 'true' ? '开启' : '关闭');
+        } else {
+            $message = '维护模式切换失败：无法写入配置文件';
+        }
+    } else {
+        $message = '维护模式切换失败：配置文件未更新';
+    }
+    
+    header('Location: status.php?message=' . urlencode($message));
+    exit;
+}
 
 // 检查是否是AJAX请求
 $ajax = $_GET['ajax'] ?? '';
 if ($ajax === 'get_data') {
     header('Content-Type: application/json');
+    
+    $logDate = $_GET['log_date'] ?? date('Y-m-d');
+    $logType = $_GET['log_type'] ?? 'current';
+    $errorDays = isset($_GET['error_days']) ? min(7, max(1, intval($_GET['error_days']))) : 7;
     
     // 加载最新数据
     $healthData = file_exists($healthFile) ? json_decode(file_get_contents($healthFile), true) ?: [] : [];
@@ -360,11 +395,21 @@ if ($ajax === 'get_data') {
         ];
     }
     
-    // 获取最近错误日志
-    $recentErrors = getRecentErrors($logFile, 10);
+    // 获取日志文件列表
+    $logFiles = getLogFiles($logDir);
     
-    // 获取完整日志（用于日志显示模块）
-    $fullLogs = getLogContent($logFile, 50); // 获取最近50行日志
+    // 获取日志内容
+    if ($logType === 'error') {
+        // 错误日志：从指定天数的日志文件中获取
+        $recentErrors = getRecentErrorsFromAllLogs($logDir, $errorDays, 200);
+        $fullLogs = $recentErrors;
+        $errorCount = count($recentErrors);
+    } else {
+        // 当前日志：根据选择的日期获取
+        $targetLogFile = $logDir . '/' . $logDate . '.log';
+        $fullLogs = getLogContent($targetLogFile, 200);
+        $errorCount = 0;
+    }
     
     // 返回JSON数据
     echo json_encode([
@@ -377,8 +422,10 @@ if ($ajax === 'get_data') {
         ],
         'services' => $services,
         'metrics' => $metricsList,
-        'errors' => $recentErrors,
-        'logs' => $fullLogs, // 添加完整日志
+        'logs' => $fullLogs,
+        'log_files' => $logFiles,
+        'current_log_date' => $logDate,
+        'maintenance_mode' => $config['system']['maintenance_mode'] ?? false,
         'chart_data' => [$healthyCount, $warningCount, $failedCount],
         'last_update' => date('H:i:s')
     ]);
@@ -404,7 +451,7 @@ if (file_exists($metricsFile)) {
 // 处理操作请求
 $action = $_GET['action'] ?? '';
 $targetId = $_GET['id'] ?? '';
-$message = '';
+$message = $_GET['message'] ?? '';
 
 try {
     if ($action === 'reset_fails' && $targetId && isset($healthData[$targetId])) {
@@ -424,7 +471,7 @@ try {
             if (empty($config['email']['enabled']) || !$config['email']['enabled']) {
                 $message = '邮件功能未启用';
             } else {
-                $reportData = generateReportData($config, $healthData, $metricsData, $logFile);
+                $reportData = generateReportData($config, $healthData, $metricsData, $logDir);
                 $mailer = new Mailer($config['email'], $logFile);
                 error_log("[" . date('Y-m-d H:i:s') . "] [INFO] 尝试发送报告邮件" . PHP_EOL, 3, $logFile);
                 
@@ -446,24 +493,79 @@ try {
     }
     
     if ($action === 'download_logs') {
+        $date = $_GET['date'] ?? date('Y-m-d');
+        $logFile = $logDir . '/' . $date . '.log';
         $lines = isset($_GET['lines']) ? min(1000, intval($_GET['lines'])) : 200;
         $content = file_exists($logFile) ? tailFile($logFile, $lines) : "日志文件不存在";
         header('Content-Type: text/plain');
-        header('Content-Disposition: attachment; filename="proxy_log_' . date('Ymd_His') . '.txt"');
+        header('Content-Disposition: attachment; filename="proxy_log_' . $date . '.txt"');
         echo $content;
-        exit;
-    }
-    
-    if ($action === 'clear_cache') {
-        $message = '缓存功能已移除';
-        header('Location: status.php?message=' . urlencode($message));
         exit;
     }
 } catch (Exception $e) {
     $message = '操作失败: ' . $e->getMessage();
 }
 
-$message = $_GET['message'] ?? $message;
+/**
+ * 获取日志文件列表
+ */
+function getLogFiles($logDir, $days = 30) {
+    $files = [];
+    if (is_dir($logDir)) {
+        $handle = opendir($logDir);
+        while (false !== ($file = readdir($handle))) {
+            if (preg_match('/^(\d{4}-\d{2}-\d{2})\.log$/', $file, $matches)) {
+                $files[] = $matches[1];
+            }
+        }
+        closedir($handle);
+        rsort($files);
+    }
+    return array_slice($files, 0, $days);
+}
+
+/**
+ * 从多个日志文件中获取最近错误日志
+ */
+function getRecentErrorsFromAllLogs($logDir, $days = 7, $limit = 200) {
+    $allErrors = [];
+    $dates = [];
+    
+    for ($i = 0; $i < $days; $i++) {
+        $dates[] = date('Y-m-d', strtotime("-$i days"));
+    }
+    
+    foreach ($dates as $date) {
+        $logFile = $logDir . '/' . $date . '.log';
+        if (!file_exists($logFile)) continue;
+        
+        $logs = tailFile($logFile, 200);
+        $lines = explode("\n", $logs);
+        
+        foreach ($lines as $line) {
+            if (empty($line)) continue;
+            
+            if (preg_match('/\[(.*?)\] \[(.*?)\] (.*)/', $line, $matches)) {
+                $level = $matches[2];
+                if ($level === 'ERROR' || $level === 'WARN') {
+                    $allErrors[] = [
+                        'time' => $matches[1],
+                        'level' => $level,
+                        'message' => $matches[3],
+                        'date' => $date,
+                        'level_class' => $level === 'ERROR' ? 'status-unhealthy' : 'status-warning'
+                    ];
+                }
+            }
+        }
+    }
+    
+    usort($allErrors, function($a, $b) {
+        return strtotime($b['time']) - strtotime($a['time']);
+    });
+    
+    return array_slice($allErrors, 0, $limit);
+}
 
 /**
  * 优化的文件末尾读取函数
@@ -514,9 +616,9 @@ function tailFile($filepath, $lines = 100) {
 }
 
 /**
- * 获取日志内容（用于显示）
+ * 获取日志内容
  */
-function getLogContent($logFile, $lines = 50) {
+function getLogContent($logFile, $lines = 200) {
     if (!file_exists($logFile)) {
         return [];
     }
@@ -537,7 +639,6 @@ function getLogContent($logFile, $lines = 50) {
                                 ($matches[2] === 'WARN' ? 'status-warning' : 'status-healthy')
             ];
         } else {
-            // 如果不是标准格式，直接显示整行
             $logs[] = [
                 'time' => '',
                 'level' => 'INFO',
@@ -547,46 +648,13 @@ function getLogContent($logFile, $lines = 50) {
         }
     }
     
-    return array_reverse($logs); // 最新的在前面
-}
-
-/**
- * 获取最近错误日志
- */
-function getRecentErrors($logFile, $limit = 10) {
-    $recentErrors = [];
-    if (file_exists($logFile)) {
-        $logs = tailFile($logFile, 200);
-        $lines = explode("\n", $logs);
-        $count = 0;
-        
-        // 从后往前遍历，获取最新的错误
-        for ($i = count($lines) - 1; $i >= 0; $i--) {
-            $line = $lines[$i];
-            if (empty($line)) continue;
-            
-            if (preg_match('/\[(.*?)\] \[(.*?)\] (.*)/', $line, $matches)) {
-                $level = $matches[2];
-                if ($level === 'ERROR' || $level === 'WARN') {
-                    $recentErrors[] = [
-                        'time' => $matches[1],
-                        'level' => $level,
-                        'message' => $matches[3],
-                        'level_class' => $level === 'ERROR' ? 'status-unhealthy' : 'status-warning'
-                    ];
-                    $count++;
-                    if ($count >= $limit) break;
-                }
-            }
-        }
-    }
-    return $recentErrors;
+    return array_reverse($logs);
 }
 
 /**
  * 生成报告数据
  */
-function generateReportData($config, $healthData, $metricsData, $logFile) {
+function generateReportData($config, $healthData, $metricsData, $logDir) {
     $totalServices = count($config['targets'] ?? []);
     $healthyServices = 0;
     $warningServices = 0;
@@ -632,7 +700,7 @@ function generateReportData($config, $healthData, $metricsData, $logFile) {
     }
     $successRate = $totalRequests > 0 ? round($successCount / $totalRequests * 100, 2) : 0;
     
-    $recentErrors = getRecentErrors($logFile, 10);
+    $recentErrors = getRecentErrorsFromAllLogs($logDir, 7, 20);
     
     return [
         'generated_at' => date('Y-m-d H:i:s'),
@@ -682,10 +750,13 @@ foreach ($healthData as $id => $health) {
     }
 }
 
+// 获取日志文件列表
+$logFiles = getLogFiles($logDir);
+
 // 获取初始错误日志
-$initialErrors = getRecentErrors($logFile, 10);
+$initialErrors = getRecentErrorsFromAllLogs($logDir, 7, 50);
 // 获取初始完整日志
-$initialLogs = getLogContent($logFile, 50);
+$initialLogs = getLogContent($logFile, 200);
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -694,6 +765,94 @@ $initialLogs = getLogContent($logFile, 50);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>反向代理监控系统 v<?php echo $config['system']['version'] ?? '2.0.0'; ?></title>
     <style>
+        /* 保持原有样式，添加维护模式相关样式 */
+        .maintenance-badge {
+            background: #ff9800;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .maintenance-badge.active {
+            background: #f44336;
+        }
+        
+        .maintenance-toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 15px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 30px;
+            color: white;
+        }
+        
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+        
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        
+        input:checked + .toggle-slider {
+            background-color: #f44336;
+        }
+        
+        input:checked + .toggle-slider:before {
+            transform: translateX(26px);
+        }
+        
+        .error-days-selector {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 10px;
+        }
+        
+        .error-days-selector input {
+            width: 60px;
+            padding: 4px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            text-align: center;
+        }
+        
+        /* 其他样式保持不变 */
         * {
             margin: 0;
             padding: 0;
@@ -723,6 +882,7 @@ $initialLogs = getLogContent($logFile, 50);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
         }
         
         .header h1 {
@@ -747,7 +907,7 @@ $initialLogs = getLogContent($logFile, 50);
             display: flex;
             gap: 10px;
             align-items: center;
-            flex-wrap: wrap;  /* 在小屏幕上自动换行 */
+            flex-wrap: wrap;
         }
         
         .btn {
@@ -759,7 +919,7 @@ $initialLogs = getLogContent($logFile, 50);
             transition: all 0.3s;
             text-decoration: none;
             display: inline-block;
-            white-space: nowrap; /* 防止按钮文字换行 */
+            white-space: nowrap;
         }
         
         .btn-primary {
@@ -864,6 +1024,8 @@ $initialLogs = getLogContent($logFile, 50);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
         }
         
         .card-body {
@@ -1052,6 +1214,7 @@ $initialLogs = getLogContent($logFile, 50);
             display: flex;
             gap: 10px;
             align-items: center;
+            flex-wrap: wrap;
         }
         
         .log-filter {
@@ -1059,6 +1222,27 @@ $initialLogs = getLogContent($logFile, 50);
             border: 1px solid #ddd;
             border-radius: 3px;
             font-size: 12px;
+        }
+        
+        .log-type-selector {
+            display: flex;
+            gap: 5px;
+            margin-right: 10px;
+        }
+        
+        .log-type-btn {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .log-type-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
         }
         
         .user-info {
@@ -1073,6 +1257,13 @@ $initialLogs = getLogContent($logFile, 50);
             background: rgba(255,255,255,0.2);
             padding: 5px 10px;
             border-radius: 5px;
+        }
+        
+        .log-date-selector {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            font-size: 12px;
         }
         
         @media (max-width: 768px) {
@@ -1102,14 +1293,27 @@ $initialLogs = getLogContent($logFile, 50);
                 <span class="update-time" id="updateTime">最后更新: <?php echo date('H:i:s'); ?></span>
             </h1>
             <div class="header-actions">
+                <div class="maintenance-toggle">
+                    <span class="maintenance-badge <?php echo $config['system']['maintenance_mode'] ? 'active' : ''; ?>">
+                        <?php echo $config['system']['maintenance_mode'] ? '🛠️ 维护中' : '✅ 运行中'; ?>
+                    </span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="maintenanceToggle" <?php echo $config['system']['maintenance_mode'] ? 'checked' : ''; ?> onchange="toggleMaintenance()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                
                 <div class="user-info">
                     <span>👤 <?php echo htmlspecialchars($_SESSION['username'] ?? 'admin'); ?></span>
                 </div>
+                
                 <?php if ($password_change_enabled): ?>
                 <a href="#" onclick="showPasswordModal(); return false;" class="btn btn-primary">🔑 修改密码</a>
                 <?php endif; ?>
+                
+                <a href="apidocs.php" target="_blank" class="btn btn-primary">📚 API文档</a>
                 <a href="?action=send_report" class="btn btn-primary" onclick="return confirm('确定发送状态报告邮件吗？')">📧 发送报告</a>
-                <a href="?action=download_logs&lines=200" class="btn btn-primary">📥 下载日志</a>
+                <a href="?action=download_logs&date=<?php echo date('Y-m-d'); ?>&lines=200" class="btn btn-primary">📥 下载日志</a>
                 <button class="btn btn-primary" onclick="refreshData()" id="refreshBtn">🔄 手动刷新</button>
                 <a href="?logout=1" class="btn btn-danger" onclick="return confirm('确定要退出登录吗？')">🚪 退出</a>
             </div>
@@ -1161,63 +1365,52 @@ $initialLogs = getLogContent($logFile, 50);
             </div>
         </div>
         
-        <!-- 新增的日志显示模块 -->
+        <!-- 日志显示模块 -->
         <div class="card" id="logViewerCard">
             <div class="card-header">
-                <span>📋 实时日志 (最近50条)</span>
-                <div>
-                    <span class="error-count-badge" id="logCount" style='display:none;'><?php echo count($initialLogs); ?></span>
+                <span>📋 系统日志</span>
+                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <div class="log-type-selector">
+                        <button class="log-type-btn active" onclick="switchLogType('current')" id="logTypeCurrent">📅 当天日志</button>
+                        <button class="log-type-btn" onclick="switchLogType('error')" id="logTypeError">⚠️ 错误日志</button>
+                    </div>
+                    
+                    <div id="currentLogControls" style="display: flex; gap: 5px; align-items: center;">
+                        <select class="log-date-selector" id="logDateSelector" onchange="changeLogDate()">
+                            <?php foreach ($logFiles as $date): ?>
+                            <option value="<?php echo $date; ?>" <?php echo $date === date('Y-m-d') ? 'selected' : ''; ?>>
+                                <?php echo $date; ?>
+                            </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    
+                    <div id="errorLogControls" style="display: none; gap: 5px; align-items: center;">
+                        <span style="font-size: 12px; color: #666;">查看最近</span>
+                        <input type="number" id="errorDays" value="7" min="1" max="7" onchange="changeErrorDays()" style="width: 50px; padding: 4px; border: 1px solid #ddd; border-radius: 3px;">
+                        <span style="font-size: 12px; color: #666;">天的错误日志</span>
+                    </div>
+                    
                     <select class="log-filter" id="logLevelFilter" onchange="filterLogs()">
                         <option value="all">全部级别</option>
                         <option value="INFO">INFO</option>
                         <option value="WARN">WARN</option>
                         <option value="ERROR">ERROR</option>
                     </select>
-                    <a href="?action=download_logs&lines=500" class="btn btn-primary">下载完整日志</a>
+                    
+                    <!-- 下载按钮 - 只在当天日志模式显示 -->
+                    <a href="#" onclick="downloadCurrentLog()" class="btn btn-primary" id="downloadLogBtn">📥 下载</a>
                 </div>
             </div>
             <div class="card-body">
                 <div class="log-controls">
                     <button class="btn btn-primary" onclick="toggleLogAutoRefresh()" id="logAutoRefreshBtn">⏸️ 暂停自动刷新</button>
                     <button class="btn btn-primary" onclick="clearLogFilter()">清除筛选</button>
+                    <span id="logStats" style="color: #666; font-size: 12px;"></span>
                 </div>
                 <div class="log-container" id="logContainer">
                     <!-- 日志内容会通过JavaScript动态加载 -->
                 </div>
-            </div>
-        </div>
-        
-        <div class="card" id="errorLogCard">
-            <div class="card-header">
-                <span>📋 最近错误日志</span>
-                <div>
-                    <span class="error-count-badge" id="errorCount"><?php echo count($initialErrors); ?></span>
-                    <!--<a href="?action=download_logs&lines=500" class="btn btn-primary">下载完整日志</a>-->
-                </div>
-            </div>
-            <div class="card-body">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>时间</th>
-                            <th>级别</th>
-                            <th>消息</th>
-                        </tr>
-                    </thead>
-                    <tbody id="errorLogBody">
-                        <?php if (!empty($initialErrors)): ?>
-                            <?php foreach ($initialErrors as $error): ?>
-                            <tr>
-                                <td><?php echo htmlspecialchars($error['time']); ?></td>
-                                <td><span class="status-badge <?php echo $error['level_class']; ?>"><?php echo htmlspecialchars($error['level']); ?></span></td>
-                                <td><?php echo htmlspecialchars($error['message']); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <tr><td colspan="3" style="text-align: center; color: #999;">暂无错误日志</td></tr>
-                        <?php endif; ?>
-                    </tbody>
-                </table>
             </div>
         </div>
         
@@ -1226,11 +1419,54 @@ $initialLogs = getLogContent($logFile, 50);
         </div>
     </div>
 
+    <!-- 密码修改模态框 -->
+    <div id="passwordModal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
+        <div style="background-color: white; margin: 10% auto; padding: 20px; border-radius: 10px; width: 90%; max-width: 400px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3 style="color: #333;">修改密码</h3>
+                <span onclick="closePasswordModal()" style="cursor: pointer; font-size: 24px; color: #999;">&times;</span>
+            </div>
+            
+            <?php if ($password_message): ?>
+            <div class="message" style="background: <?php echo strpos($password_message, '成功') !== false ? '#4CAF50' : '#f44336'; ?>; color: white; padding: 10px; border-radius: 5px; margin-bottom: 15px;">
+                <?php echo htmlspecialchars($password_message); ?>
+            </div>
+            <?php endif; ?>
+            
+            <form method="POST" action="">
+                <div class="form-group">
+                    <label for="old_password">原密码</label>
+                    <input type="password" id="old_password" name="old_password" required style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                </div>
+                
+                <div class="form-group">
+                    <label for="new_password">新密码</label>
+                    <input type="password" id="new_password" name="new_password" required style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                    <small style="color: #999;">密码长度不能少于6位</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="confirm_password">确认新密码</label>
+                    <input type="password" id="confirm_password" name="confirm_password" required style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
+                </div>
+                
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button type="submit" name="change_password" class="btn btn-success" style="flex: 1; padding: 10px;">确认修改</button>
+                    <button type="button" onclick="closePasswordModal()" class="btn btn-primary" style="flex: 1; padding: 10px;">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <script>
         // 初始化图表
         let healthChart;
         let logAutoRefresh = true;
         let currentLogFilter = 'all';
+        let currentLogType = 'current';
+        let currentLogDate = '<?php echo date('Y-m-d'); ?>';
+        let currentErrorDays = 7;
+        let logFiles = <?php echo json_encode($logFiles); ?>;
         
         function initChart(healthy, warning, failed) {
             const ctx = document.getElementById('healthChart').getContext('2d');
@@ -1258,10 +1494,20 @@ $initialLogs = getLogContent($logFile, 50);
                 }
             });
         }
-
+    
         // 初始化图表
         initChart(<?php echo $healthyCount; ?>, <?php echo $warningCount; ?>, <?php echo $failedCount; ?>);
-
+    
+        // 切换维护模式
+        function toggleMaintenance() {
+            if (confirm('确定要' + (document.getElementById('maintenanceToggle').checked ? '开启' : '关闭') + '维护模式吗？')) {
+                window.location.href = '?action=toggle_maintenance';
+            } else {
+                // 如果用户取消，恢复复选框状态
+                document.getElementById('maintenanceToggle').checked = !document.getElementById('maintenanceToggle').checked;
+            }
+        }
+    
         // 刷新数据函数
         async function refreshData() {
             const refreshBtn = document.getElementById('refreshBtn');
@@ -1272,7 +1518,14 @@ $initialLogs = getLogContent($logFile, 50);
             document.body.classList.add('loading');
             
             try {
-                const response = await fetch('?ajax=get_data&nocache=' + Date.now());
+                const url = new URL(window.location.href);
+                url.searchParams.set('ajax', 'get_data');
+                url.searchParams.set('log_date', currentLogDate);
+                url.searchParams.set('log_type', currentLogType);
+                url.searchParams.set('error_days', currentErrorDays);
+                url.searchParams.set('nocache', Date.now());
+                
+                const response = await fetch(url.toString());
                 
                 // 检查是否未授权
                 if (response.status === 401) {
@@ -1291,13 +1544,8 @@ $initialLogs = getLogContent($logFile, 50);
                 // 更新性能指标
                 updateMetrics(data.metrics);
                 
-                // 更新错误日志
-                updateErrorLog(data.errors);
-                
-                // 更新完整日志
-                if (logAutoRefresh) {
-                    updateLogViewer(data.logs);
-                }
+                // 更新日志
+                updateLogViewer(data.logs);
                 
                 // 更新图表
                 initChart(data.chart_data[0], data.chart_data[1], data.chart_data[2]);
@@ -1305,6 +1553,9 @@ $initialLogs = getLogContent($logFile, 50);
                 // 更新时间显示
                 document.getElementById('updateTime').textContent = '最后更新: ' + data.last_update;
                 document.getElementById('chartUpdateTime').textContent = '最后更新: ' + data.last_update;
+                
+                // 更新日志统计
+                updateLogStats(data.logs);
                 
             } catch (error) {
                 console.error('刷新失败:', error);
@@ -1314,7 +1565,19 @@ $initialLogs = getLogContent($logFile, 50);
                 document.body.classList.remove('loading');
             }
         }
-
+    
+        function updateLogStats(logs) {
+            const statsEl = document.getElementById('logStats');
+            if (logs && logs.length) {
+                const infoCount = logs.filter(l => l.level === 'INFO').length;
+                const warnCount = logs.filter(l => l.level === 'WARN').length;
+                const errorCount = logs.filter(l => l.level === 'ERROR').length;
+                statsEl.textContent = `📊 共 ${logs.length} 条 (INFO: ${infoCount}, WARN: ${warnCount}, ERROR: ${errorCount})`;
+            } else {
+                statsEl.textContent = '暂无日志';
+            }
+        }
+    
         function updateStats(stats) {
             const statsGrid = document.getElementById('statsGrid');
             const totalServices = stats.total_services;
@@ -1342,7 +1605,7 @@ $initialLogs = getLogContent($logFile, 50);
                 </div>
             `;
         }
-
+    
         function updateServices(services) {
             let html = `
                 <div class="card">
@@ -1407,7 +1670,7 @@ $initialLogs = getLogContent($logFile, 50);
             
             document.getElementById('servicesTable').innerHTML = html;
         }
-
+    
         function updateMetrics(metrics) {
             let html = `
                 <div class="card" style="grid-column: span 2;">
@@ -1461,38 +1724,11 @@ $initialLogs = getLogContent($logFile, 50);
             
             document.getElementById('metricsSection').innerHTML = html;
         }
-
-        function updateErrorLog(errors) {
-            const errorLogBody = document.getElementById('errorLogBody');
-            const errorCount = document.getElementById('errorCount');
-            
-            // 更新错误计数
-            errorCount.textContent = '共' + errors.length + '条';
-            
-            if (errors.length > 0) {
-                let html = '';
-                errors.forEach(error => {
-                    html += `
-                        <tr>
-                            <td>${escapeHtml(error.time)}</td>
-                            <td><span class="status-badge ${error.level_class}">${escapeHtml(error.level)}</span></td>
-                            <td>${escapeHtml(error.message)}</td>
-                        </tr>
-                    `;
-                });
-                errorLogBody.innerHTML = html;
-            } else {
-                errorLogBody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: #999;">暂无错误日志</td></tr>';
-            }
-        }
-
+    
         function updateLogViewer(logs) {
             const logContainer = document.getElementById('logContainer');
-            const logCount = document.getElementById('logCount');
             
-            logCount.textContent = logs.length;
-            
-            if (logs.length > 0) {
+            if (logs && logs.length > 0) {
                 let html = '';
                 logs.forEach(log => {
                     // 根据筛选条件过滤
@@ -1504,6 +1740,9 @@ $initialLogs = getLogContent($logFile, 50);
                     if (log.time) {
                         html += `<span class="log-time">[${escapeHtml(log.time)}]</span>`;
                     }
+                    if (log.date && currentLogType === 'error') {
+                        html += `<span class="log-time">[${escapeHtml(log.date)}]</span>`;
+                    }
                     html += `<span class="log-level-${log.level}">[${escapeHtml(log.level)}]</span>`;
                     html += `<span class="log-message">${escapeHtml(log.message)}</span>`;
                     html += `</div>`;
@@ -1514,28 +1753,59 @@ $initialLogs = getLogContent($logFile, 50);
                 }
                 
                 logContainer.innerHTML = html;
-                logContainer.scrollTop = 0; // 滚动到顶部显示最新日志
+                logContainer.scrollTop = 0;
             } else {
                 logContainer.innerHTML = '<div class="log-line" style="color: #999; text-align: center;">暂无日志</div>';
             }
         }
-
+    
         function filterLogs() {
             const filter = document.getElementById('logLevelFilter');
             currentLogFilter = filter.value;
-            
-            // 触发一次刷新来应用筛选
-            if (!logAutoRefresh) {
-                // 如果自动刷新已暂停，从当前数据重新渲染
-                const lastData = window.lastLogData;
-                if (lastData) {
-                    updateLogViewer(lastData);
-                }
-            } else {
-                refreshData();
-            }
+            refreshData();
         }
-
+    
+        function switchLogType(type) {
+            currentLogType = type;
+            
+            // 更新按钮样式
+            document.getElementById('logTypeCurrent').classList.remove('active');
+            document.getElementById('logTypeError').classList.remove('active');
+            document.getElementById(`logType${type === 'current' ? 'Current' : 'Error'}`).classList.add('active');
+            
+            // 显示/隐藏相关控件
+            const currentControls = document.getElementById('currentLogControls');
+            const errorControls = document.getElementById('errorLogControls');
+            const downloadBtn = document.getElementById('downloadLogBtn');
+            
+            if (type === 'error') {
+                currentControls.style.display = 'none';
+                errorControls.style.display = 'flex';
+                downloadBtn.style.display = 'none'; // 错误日志模式隐藏下载按钮
+            } else {
+                currentControls.style.display = 'flex';
+                errorControls.style.display = 'none';
+                downloadBtn.style.display = 'inline-block'; // 当天日志模式显示下载按钮
+            }
+            
+            refreshData();
+        }
+    
+        function changeLogDate() {
+            const selector = document.getElementById('logDateSelector');
+            currentLogDate = selector.value;
+            refreshData();
+        }
+    
+        function changeErrorDays() {
+            const input = document.getElementById('errorDays');
+            let days = parseInt(input.value);
+            days = Math.min(7, Math.max(1, days));
+            input.value = days;
+            currentErrorDays = days;
+            refreshData();
+        }
+    
         function toggleLogAutoRefresh() {
             logAutoRefresh = !logAutoRefresh;
             const btn = document.getElementById('logAutoRefreshBtn');
@@ -1545,14 +1815,23 @@ $initialLogs = getLogContent($logFile, 50);
                 refreshData();
             }
         }
-
+    
         function clearLogFilter() {
             const filter = document.getElementById('logLevelFilter');
             filter.value = 'all';
             currentLogFilter = 'all';
             filterLogs();
         }
-
+    
+        function downloadCurrentLog() {
+            // 只在当天日志模式可以下载
+            if (currentLogType !== 'current') {
+                return;
+            }
+            const url = `?action=download_logs&date=${currentLogDate}&lines=500`;
+            window.location.href = url;
+        }
+    
         // HTML转义函数
         function escapeHtml(text) {
             if (text === undefined || text === null) return '';
@@ -1560,19 +1839,19 @@ $initialLogs = getLogContent($logFile, 50);
             div.textContent = text;
             return div.innerHTML;
         }
-
+    
         // 自动刷新（每10秒）
         setInterval(() => {
             if (logAutoRefresh) {
                 refreshData();
             }
         }, 10000);
-
+    
         // 页面加载完成后立即刷新一次数据
         document.addEventListener('DOMContentLoaded', function() {
             refreshData();
         });
-
+    
         // 5秒后自动隐藏消息框
         setTimeout(function() {
             const messageBox = document.getElementById('messageBox');
@@ -1580,47 +1859,7 @@ $initialLogs = getLogContent($logFile, 50);
                 messageBox.style.display = 'none';
             }
         }, 5000);
-    </script>
-    <!-- 密码修改模态框 -->
-    <div id="passwordModal" style="display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);">
-        <div style="background-color: white; margin: 10% auto; padding: 20px; border-radius: 10px; width: 90%; max-width: 400px; box-shadow: 0 5px 15px rgba(0,0,0,0.3);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h3 style="color: #333;">修改密码</h3>
-                <span onclick="closePasswordModal()" style="cursor: pointer; font-size: 24px; color: #999;">&times;</span>
-            </div>
-            
-            <?php if ($password_message): ?>
-            <div class="message" style="background: <?php echo strpos($password_message, '成功') !== false ? '#4CAF50' : '#f44336'; ?>; color: white; padding: 10px; border-radius: 5px; margin-bottom: 15px;">
-                <?php echo htmlspecialchars($password_message); ?>
-            </div>
-            <?php endif; ?>
-            
-            <form method="POST" action="">
-                <div class="form-group">
-                    <label for="old_password">原密码</label>
-                    <input type="password" id="old_password" name="old_password" required style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                </div>
-                
-                <div class="form-group">
-                    <label for="new_password">新密码</label>
-                    <input type="password" id="new_password" name="new_password" required style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                    <small style="color: #999;">密码长度不能少于6位</small>
-                </div>
-                
-                <div class="form-group">
-                    <label for="confirm_password">确认新密码</label>
-                    <input type="password" id="confirm_password" name="confirm_password" required style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 5px;">
-                </div>
-                
-                <div style="display: flex; gap: 10px; margin-top: 20px;">
-                    <button type="submit" name="change_password" class="btn btn-success" style="flex: 1; padding: 10px;">确认修改</button>
-                    <button type="button" onclick="closePasswordModal()" class="btn btn-primary" style="flex: 1; padding: 10px;">取消</button>
-                </div>
-            </form>
-        </div>
-    </div>
     
-    <script>
         // 密码修改模态框函数
         function showPasswordModal() {
             document.getElementById('passwordModal').style.display = 'block';
@@ -1632,9 +1871,9 @@ $initialLogs = getLogContent($logFile, 50);
         
         // 点击模态框外部关闭
         window.onclick = function(event) {
-            const modal = document.getElementById('passwordModal');
-            if (event.target == modal) {
-                modal.style.display = 'none';
+            const passwordModal = document.getElementById('passwordModal');
+            if (event.target == passwordModal) {
+                passwordModal.style.display = 'none';
             }
         }
         

@@ -22,13 +22,20 @@ if (file_exists(ROOT_PATH . '/vendor/autoload.php')) {
 // 加载必要的类文件
 require_once ROOT_PATH . '/ReverseProxy.php';
 require_once ROOT_PATH . '/Mailer.php';
+require_once ROOT_PATH . '/ApiHandler.php'; // 新增API处理类
 
 /**
  * 简单的路由处理
- * 可以根据请求路径决定是否显示状态页面
+ * 可以根据请求路径决定是否显示状态页面或API
  */
 $requestUri = $_SERVER['REQUEST_URI'];
 $path = parse_url($requestUri, PHP_URL_PATH);
+
+// 判断是否访问API
+if (strpos($path, '/api/') === 0) {
+    require_once ROOT_PATH . '/api.php';
+    exit;
+}
 
 // 判断是否访问状态页面
 if ($path === '/status' || $path === '/status.php') {
@@ -36,14 +43,9 @@ if ($path === '/status' || $path === '/status.php') {
     exit;
 }
 
-// 判断是否访问健康检查页面（用于负载均衡器）
-if ($path === '/health' || $path === '/health.php') {
-    header('Content-Type: application/json');
-    echo json_encode([
-        'status' => 'healthy',
-        'timestamp' => time(),
-        'version' => '2.0.0'
-    ]);
+// 判断是否访问状态页面
+if ($path === '/docs' || $path === '/docs.php') {
+    require_once ROOT_PATH . '/apidocs.php';
     exit;
 }
 
