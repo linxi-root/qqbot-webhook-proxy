@@ -54,7 +54,7 @@ return [
     // 系统配置
     'system' => [
         'name' => '反向代理系统',
-        'version' => '1.0.0',
+        'version' => '2.0.0',
         'timezone' => 'Asia/Shanghai',
         'maintenance_mode' => false,
         'maintenance_message' => '系统维护中，请稍后访问'
@@ -72,6 +72,7 @@ return [
         'username' => 'admin',
         'password' => 'admin123', // 明文密码（生产环境建议使用更复杂的密码）
         'session_lifetime' => 3600, // 会话生命周期（秒）
-        'enable_password_change' => true // 是否允许在界面修改密码
+        'enable_password_change' => true, // 是否允许在界面修改密码
+        'api_token' => 'cs123' //api服务需要token，当token为空时禁用api服务
     ]
 ];
